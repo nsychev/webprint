@@ -1,0 +1,101 @@
+# webprint server configuration.
+#
+# Only `sites` is required; everything else has a sensible default.
+# Validate a file without starting the server:
+#     webprint-server --config config.yaml --check
+
+# Address to bind. Use 0.0.0.0 to accept connections from the venue network.
+listen: "0.0.0.0:8080"
+
+# Where the queue is kept on disk, so restarting the server does not lose the
+# jobs waiting to print. Defaults to webprint-state.jsonl beside this file.
+# state_file: /var/lib/webprint/state.jsonl
+
+# Public path prefix, when the server is proxied below the root. For
+# https://example.org/print/ -> http://127.0.0.1:8080/ set:
+#     base_path: /print
+# Links, redirects and the session cookie are then scoped to it. The routes
+# answer both with and without the prefix, so it does not matter whether the
+# proxy strips it. Leave unset when serving at the root.
+# base_path: /print
+
+# Token for the cross-site stats page at /stats and /api/v1/admin/stats.
+# Stats are disabled entirely when this is unset.
+admin_token: "change-me-admin-token"
+
+# Key used to sign session cookies. Keep it secret and stable: changing it
+# (or leaving it unset, which generates a random one) signs every team out.
+secret: "change-me-to-a-long-random-string"
+
+# How long a team stays signed in.
+session_hours: 24
+
+# Time zone for the times shown in the UI and printed on the page, written as
+# a UTC offset. Individual sites may override it; see below.
+timezone: UTC
+
+# Set only when the server is served over HTTPS.
+secure_cookies: false
+
+pdf:
+  font_size: 10.0
+  line_spacing: 1.25
+  tab_width: 4
+  # Print a line-number gutter.
+  line_numbers: true
+  # Highlight code for black-and-white printers: bold keywords, italic grey
+  # comments. Turn off to print everything uniformly.
+  highlight: true
+  # The only limit on job length. A page holds 58 lines of up to about 81
+  # characters, so 10 pages is 580 lines. A job over it is refused at
+  # submission, with its true page count, rather than printed up to the limit
+  # and left unfinished. (A request of more than a couple of megabytes is
+  # refused by the HTTP layer before it reaches any of this.)
+  max_pages: 10
+  # Extra .sublime-syntax grammars to load, for a language webprint does not
+  # already carry. Optional.
+  # syntax_dir: /etc/webprint/syntaxes
+  # Replace the bundled JetBrains Mono. Optional; use a monospace font.
+  # font_path: /usr/share/fonts/truetype/custom/Mono-Regular.ttf
+  # font_bold_path: /usr/share/fonts/truetype/custom/Mono-Bold.ttf
+
+limits:
+  # Jobs one team may have waiting at the same time.
+  max_queued_per_team: 3
+  # Finished jobs kept per site for the status list and stats.
+  job_history: 200
+  # How long a claimed job may go unconfirmed before it is handed out again.
+  lease_seconds: 120
+  # Delivery attempts before a job is given up on.
+  max_attempts: 3
+  # How long the server holds a client's poll open waiting for work.
+  poll_wait_seconds: 25
+
+sites:
+  main-hall:
+    # Optional display name; defaults to the slug.
+    name: "Main Hall"
+    # Optional: this venue's own time zone. It overrides the timezone above
+    # for this site's printouts and for what its teams see. Leave it out to
+    # follow the server. Half-hour zones work too: "UTC+05:30".
+    # timezone: UTC+06:00
+    # The onsite print client authenticates with this token.
+    token: "main-hall-secret-token"
+    teams:
+      - { username: team01, password: "pw-team01", name: "Hello World" }
+      - { username: team02, password: "pw-team02", name: "Segfault Squad" }
+      # A login may be listed more than once to give it several passwords,
+      # for instance one for the practice session and one for the contest.
+      # Both sign the same team in, so the entries must share a name.
+      - { username: team03, password: "practice-pw", name: "Buffer Overflow" }
+      - { username: team03, password: "contest-pw", name: "Buffer Overflow" }
+
+  annex:
+    name: "Annex Room"
+    timezone: UTC+03:00
+    token: "annex-secret-token"
+    teams:
+      # A login may repeat across sites, as here, as long as the passwords
+      # differ: the login and password together identify the team. The same
+      # pair listed twice anywhere stops the server from starting.
+      - { username: team01, password: "pw-annex-01", name: "Команда «Мечта»" }

@@ -1,0 +1,18 @@
+[package]
+name = "webprint-pdf"
+description = "PDF generator for webprint print jobs: A4, embedded JetBrains Mono, monochrome syntax highlighting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+ttf-parser.workspace = true
+# "default-fancy" swaps oniguruma for the pure-Rust fancy-regex engine, so the
+# server builds without a C toolchain.
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"], optional = true }
+
+[features]
+default = ["highlight"]
+highlight = ["dep:syntect"]

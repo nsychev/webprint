@@ -1,0 +1,147 @@
+%YAML 1.2
+---
+# Kotlin grammar for syntect.
+#
+# syntect's bundled grammar set has no Kotlin, and no maintained
+# `.sublime-syntax` for it exists to vendor, so this one is written for
+# webprint. It is deliberately small: webprint renders to black and white, so
+# only the distinctions that survive on paper matter - comments, literals,
+# keywords, modifiers and declaration names. It is not a full Kotlin parser.
+name: Kotlin
+file_extensions:
+  - kt
+  - kts
+scope: source.kotlin
+
+variables:
+  identifier: '[A-Za-z_][A-Za-z_0-9]*'
+
+contexts:
+  main:
+    - include: comments
+    - include: strings
+    - include: annotations
+    - include: declarations
+    - include: keywords
+    - include: types
+    - include: numbers
+
+  comments:
+    - match: /\*
+      scope: punctuation.definition.comment.kotlin
+      push: block-comment
+    - match: //
+      scope: punctuation.definition.comment.kotlin
+      push: line-comment
+
+  line-comment:
+    - meta_scope: comment.line.double-slash.kotlin
+    - match: $\n?
+      pop: true
+
+  block-comment:
+    - meta_scope: comment.block.kotlin
+    # Kotlin block comments nest.
+    - match: /\*
+      push: block-comment
+    - match: \*/
+      pop: true
+
+  strings:
+    - match: '"""'
+      scope: punctuation.definition.string.begin.kotlin
+      push: raw-string
+    - match: '"'
+      scope: punctuation.definition.string.begin.kotlin
+      push: double-string
+    - match: "'"
+      scope: punctuation.definition.string.begin.kotlin
+      push: char-literal
+
+  raw-string:
+    - meta_scope: string.quoted.triple.kotlin
+    - match: '"""'
+      scope: punctuation.definition.string.end.kotlin
+      pop: true
+    - include: interpolation
+
+  double-string:
+    - meta_scope: string.quoted.double.kotlin
+    - match: \\.
+      scope: constant.character.escape.kotlin
+    - match: '"'
+      scope: punctuation.definition.string.end.kotlin
+      pop: true
+    # An unterminated string must not swallow the rest of the file.
+    - match: $
+      pop: true
+    - include: interpolation
+
+  char-literal:
+    - meta_scope: string.quoted.single.kotlin
+    - match: \\.
+      scope: constant.character.escape.kotlin
+    - match: "'"
+      scope: punctuation.definition.string.end.kotlin
+      pop: true
+    - match: $
+      pop: true
+
+  interpolation:
+    - match: \$\{
+      scope: punctuation.section.interpolation.begin.kotlin
+      push:
+        - meta_scope: meta.interpolation.kotlin
+        - match: \}
+          scope: punctuation.section.interpolation.end.kotlin
+          pop: true
+        - include: main
+    - match: \$\w+
+      scope: variable.other.kotlin
+
+  annotations:
+    - match: '@{{identifier}}'
+      scope: variable.annotation.kotlin
+
+  declarations:
+    - match: '\b(fun)\s+({{identifier}})'
+      captures:
+        1: keyword.declaration.kotlin
+        2: entity.name.function.kotlin
+    - match: '\b(class|interface|object|enum\s+class|annotation\s+class|typealias)\s+({{identifier}})'
+      captures:
+        1: keyword.declaration.kotlin
+        2: entity.name.type.kotlin
+    - match: '\b(package|import)\s+'
+      scope: keyword.control.import.kotlin
+
+  keywords:
+    - match: \b(as|break|continue|do|else|for|if|in|is|return|throw|try|when|while)\b
+      scope: keyword.control.kotlin
+    - match: \b(by|catch|constructor|delegate|field|finally|get|init|param|property|receiver|set|setparam|where)\b
+      scope: keyword.other.kotlin
+    - match: \b(class|fun|interface|object|package|import|typealias|val|var)\b
+      scope: keyword.declaration.kotlin
+    - match: \b(super|this)\b
+      scope: variable.language.kotlin
+    - match: \b(true|false|null)\b
+      scope: constant.language.kotlin
+    - match: \b(abstract|actual|annotation|companion|const|crossinline|data|enum|expect|external|final|infix|inline|inner|internal|lateinit|noinline|open|operator|out|override|private|protected|public|reified|sealed|suspend|tailrec|vararg)\b
+      scope: storage.modifier.kotlin
+    - match: '(\+\+|--|&&|\|\||[+\-*/%=!<>&|?:])'
+      scope: keyword.operator.kotlin
+
+  types:
+    - match: \b(Any|Array|Boolean|Byte|Char|CharSequence|Collection|Comparable|Double|Float|Int|Iterable|List|Long|Map|MutableList|MutableMap|MutableSet|Nothing|Number|Pair|Sequence|Set|Short|String|StringBuilder|Triple|Unit)\b
+      scope: support.type.kotlin
+    # Kotlin convention: a capitalised identifier is a type.
+    - match: '\b[A-Z][A-Za-z_0-9]*\b'
+      scope: entity.name.type.kotlin
+
+  numbers:
+    - match: '\b0[xX][0-9a-fA-F_]+[uUlL]*\b'
+      scope: constant.numeric.hex.kotlin
+    - match: '\b0[bB][01_]+[uUlL]*\b'
+      scope: constant.numeric.binary.kotlin
+    - match: '\b[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?[fFuUlL]*\b'
+      scope: constant.numeric.kotlin

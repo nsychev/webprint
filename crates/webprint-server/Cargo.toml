@@ -1,0 +1,29 @@
+[package]
+name = "webprint-server"
+description = "webprint server: web UI for teams, PDF rendering, and a job queue for onsite print clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+webprint-pdf = { path = "../webprint-pdf" }
+anyhow.workspace = true
+axum = { version = "0.8", features = ["macros"] }
+base64.workspace = true
+clap.workspace = true
+hmac.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+time.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

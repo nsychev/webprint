@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failing build should not also cost a slow incremental cache.
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - run: cargo fmt --all --check
+
+  check:
+    # The client has Windows-only code paths, so they have to be compiled,
+    # linted and tested on Windows: a Linux-only job would never see them.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux (server + client)
+            os: ubuntu-latest
+            packages: --workspace
+          - name: windows (client)
+            os: windows-latest
+            packages: --package webprint-pdf --package webprint-client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install poppler
+        if: runner.os == 'Linux'
+        # The PDF tests verify real output with pdftotext, pdfinfo and
+        # pdffonts. They skip when the tools are missing, so without this the
+        # suite would pass without checking anything it renders.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
+      - name: Confirm poppler is present
+        if: runner.os == 'Linux'
+        run: pdftotext -v
+
+      - name: Clippy
+        run: cargo clippy ${{ matrix.packages }} --all-targets --locked
+
+      - name: Build
+        run: cargo build ${{ matrix.packages }} --all-targets --locked
+
+      - name: Test
+        run: cargo test ${{ matrix.packages }} --locked

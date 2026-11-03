@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish, e.g. v0.1.0'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+          - name: windows-x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # The tag has to agree with the workspace version, or the published
+          # binaries would report something other than what they are called.
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "v$version" ]; then
+            echo "tag $tag does not match workspace version $version" >&2
+            exit 1
+          fi
+
+      # The server is pure Rust, so it links statically against musl and then
+      # runs on any Linux regardless of its glibc.
+      - name: Add the musl target
+        if: runner.os == 'Linux'
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build the server (Linux only)
+        if: runner.os == 'Linux'
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl --package webprint-server
+
+      - name: Build the client
+        run: cargo build --release --locked --package webprint-client
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          mkdir -p dist
+          font_licence=crates/webprint-pdf/assets/JetBrainsMono-OFL.txt
+
+          stage=$(mktemp -d)/webprint-server-$tag-linux-x86_64
+          mkdir -p "$stage"
+          cp target/x86_64-unknown-linux-musl/release/webprint-server "$stage/"
+          cp README.md LICENSE config.example.yaml "$font_licence" "$stage/"
+          tar -czf "dist/webprint-server-$tag-linux-x86_64.tar.gz" -C "$(dirname "$stage")" "$(basename "$stage")"
+
+          stage=$(mktemp -d)/webprint-client-$tag-linux-x86_64
+          mkdir -p "$stage"
+          cp target/release/webprint-client "$stage/"
+          cp README.md LICENSE "$font_licence" "$stage/"
+          tar -czf "dist/webprint-client-$tag-linux-x86_64.tar.gz" -C "$(dirname "$stage")" "$(basename "$stage")"
+
+          ls -l dist
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $stage = "webprint-client-$tag-windows-x86_64"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item target/release/webprint-client.exe $stage/
+          Copy-Item README.md, LICENSE, crates/webprint-pdf/assets/JetBrainsMono-OFL.txt $stage/
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip" -Force
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect and checksum
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "webprint $TAG" \
+              --generate-notes \
+              dist/*
+          fi

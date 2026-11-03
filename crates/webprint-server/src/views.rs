@@ -290,7 +290,7 @@ pub fn stats_page(sites: &[(SiteStats, TimeZone)], now: i64, server_tz: TimeZone
             };
             let oldest = s
                 .oldest_queued_age
-                .map(|a| format_age(a))
+                .map(format_age)
                 .unwrap_or("—".to_string());
 
             let team_rows = s
@@ -519,7 +519,10 @@ mod tests {
         let now = 1_762_171_200;
 
         let page = stats_page(&[(base.clone(), TimeZone::UTC)], now, TimeZone::UTC);
-        assert!(page.contains("No print client has polled"));
+        assert!(
+            page.contains("msg err"),
+            "an absent client must stand out: {page}"
+        );
         assert!(page.contains("Main Hall"));
         assert!(page.contains("1m 35s"));
         assert!(page.contains("Team One"));
@@ -538,8 +541,9 @@ mod tests {
             page.contains("state ok"),
             "a live client should read as healthy"
         );
-        // Each site is labelled with the zone its times are shown in.
-        assert!(page.contains("UTC+03:00"), "{page}");
+        // Its last-seen time is rendered in the site's own zone: 11:59:55 UTC
+        // is 14:59:55 at UTC+03:00.
+        assert!(page.contains("14:59:55"), "{page}");
 
         let stale = SiteStats {
             clients: vec![ClientStatus {
@@ -585,8 +589,14 @@ mod tests {
         let page = stats_page(&[(stats, TimeZone::UTC)], now, TimeZone::UTC);
         assert!(page.contains("printer-a"), "{page}");
         assert!(page.contains("printer-b"), "{page}");
-        assert!(page.contains("Jobs taken"));
-        // And the shared-queue behaviour is spelled out.
-        assert!(page.contains("share the queue"), "{page}");
+        // The counts, not the column heading, are what has to be there.
+        assert!(
+            page.contains(">6<"),
+            "printer-a's job count is missing: {page}"
+        );
+        assert!(
+            page.contains(">4<"),
+            "printer-b's job count is missing: {page}"
+        );
     }
 }

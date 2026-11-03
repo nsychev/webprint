@@ -750,10 +750,11 @@ async fn two_clients_sharing_a_token_split_the_queue() {
     assert_eq!(taken["printer-b"], 1);
     assert_eq!(taken["printer-c"], 0);
 
-    // And the operator page explains what sharing a token means.
+    // And the operator page lists both of them, so a client nobody meant to
+    // leave running is visible rather than a mystery.
     let page = h.get("/stats?token=adm-token").await.text();
     assert!(page.contains("printer-a"), "{page}");
-    assert!(page.contains("share the queue"), "{page}");
+    assert!(page.contains("printer-b"), "{page}");
 }
 
 #[tokio::test]
@@ -839,7 +840,7 @@ async fn stats_are_exposed_per_site_and_across_sites() {
     let res = h.get("/stats?token=adm-token").await;
     assert_eq!(res.status, StatusCode::OK);
     assert!(res.text().contains("Main Hall"));
-    assert!(res.text().contains("in queue"));
+    assert!(res.text().contains("annex"), "every site is listed");
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 //! webprint server.
 
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +21,10 @@ mod util;
 mod views;
 
 use config::Config;
+
+/// How long connections are given to finish once shutdown begins.
+const GRACE_PERIOD: Duration = Duration::from_secs(5);
+
 use state::AppState;
 
 #[derive(Parser, Debug)]
@@ -142,6 +147,8 @@ async fn main() -> Result<()> {
     });
 
     let sweeper = spawn_lease_sweeper(state.clone());
+    let stopping = state.clone();
+    let mut grace = state.shutdown.clone();
     let app = routes::router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -149,10 +156,26 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!(%addr, "webprint server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    let served = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // Tell requests that are deliberately held open - a client's long
+        // poll - to finish now, instead of waiting out their timeout.
+        stopping.begin_shutdown();
+    });
+    // `WithGracefulShutdown` is only `IntoFuture`, and select! needs to poll
+    // it more than once.
+    let served = served.into_future();
+    tokio::pin!(served);
+
+    // A connection that still will not finish must not hold the process. The
+    // grace period starts when shutdown does, not when the server starts.
+    tokio::select! {
+        result = &mut served => result.context("server error")?,
+        _ = async {
+            let _ = grace.wait_for(|stopping| *stopping).await;
+            tokio::time::sleep(GRACE_PERIOD).await;
+        } => tracing::warn!("a connection did not close in time; stopping anyway"),
+    }
 
     sweeper.abort();
     tracing::info!("shutdown complete");

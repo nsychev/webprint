@@ -420,7 +420,12 @@ async fn api_claim(
             .min(limits.poll_wait_seconds * 1_000),
     );
 
-    match state.store.claim_wait(&site.site, &client, wait).await {
+    let mut shutdown = state.shutdown.clone();
+    match state
+        .store
+        .claim_wait(&site.site, &client, wait, &mut shutdown)
+        .await
+    {
         Some(job) => {
             tracing::info!(site = %site.site, job = job.id, %client, "job claimed");
             Json(serde_json::json!({ "job": job })).into_response()

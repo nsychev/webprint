@@ -20,6 +20,13 @@ pub struct AppState {
     pub key: Arc<SessionKey>,
     /// Public path prefix, normalized: empty at the root, else `/print`.
     pub base_path: Arc<String>,
+    /// Set when the server is shutting down, so requests held open for a
+    /// client - the long poll - can finish promptly.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// Kept alongside the receiver: a watch channel whose sender has been
+    /// dropped reports a change at once, which would end every long poll
+    /// immediately.
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl AppState {
@@ -33,13 +40,21 @@ impl AppState {
         let key = SessionKey::new(config.secret.as_deref());
         let store = make_store(&config);
         let base_path = config.base_path();
+        let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
         Self {
             config: Arc::new(config),
             store: Arc::new(store),
             renderer: Arc::new(renderer),
             key: Arc::new(key),
             base_path: Arc::new(base_path),
+            shutdown,
+            shutdown_tx: Arc::new(shutdown_tx),
         }
+    }
+
+    /// Tells requests that are held open that the server is stopping.
+    pub fn begin_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
     }
 
     /// Builds a public URL path: `/login` becomes `/print/login` when the

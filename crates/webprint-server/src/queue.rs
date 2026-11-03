@@ -629,13 +629,21 @@ impl Store {
     }
 
     /// Waits up to `wait` for a job to become available, then claims it.
+    ///
+    /// Returns as soon as `shutdown` is set, so a poll held open for half a
+    /// minute does not keep the server alive after Ctrl-C.
     pub async fn claim_wait(
         &self,
         slug: &str,
         client: &str,
         wait: std::time::Duration,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Option<ClaimedJob> {
         let site = self.site(slug)?;
+        if *shutdown.borrow() {
+            self.touch_client(slug, client, now_unix());
+            return None;
+        }
         let deadline = tokio::time::Instant::now() + wait;
         loop {
             // Register interest *before* checking the queue so a job submitted
@@ -649,6 +657,7 @@ impl Store {
             }
             tokio::select! {
                 _ = notified => continue,
+                _ = shutdown.changed() => return None,
                 _ = tokio::time::sleep_until(deadline) => return None,
             }
         }
@@ -925,6 +934,14 @@ mod tests {
 
     fn store(extra: &str) -> Store {
         Store::new(&config(extra))
+    }
+
+    /// A shutdown signal that never fires.
+    fn never() -> tokio::sync::watch::Receiver<bool> {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        // Keep the sender alive, or `changed()` resolves immediately.
+        Box::leak(Box::new(tx));
+        rx
     }
 
     fn meta() -> JobMeta {
@@ -1362,7 +1379,7 @@ mod tests {
         };
         let started = std::time::Instant::now();
         let job = s
-            .claim_wait("main", "c", std::time::Duration::from_secs(5))
+            .claim_wait("main", "c", std::time::Duration::from_secs(5), &mut never())
             .await
             .expect("job delivered");
         assert_eq!(job.id, 1);
@@ -1375,7 +1392,12 @@ mod tests {
         let s = store("");
         let started = std::time::Instant::now();
         assert!(s
-            .claim_wait("main", "idle-client", std::time::Duration::from_millis(50))
+            .claim_wait(
+                "main",
+                "idle-client",
+                std::time::Duration::from_millis(50),
+                &mut never()
+            )
             .await
             .is_none());
         assert!(started.elapsed() >= std::time::Duration::from_millis(50));
@@ -1390,7 +1412,12 @@ mod tests {
         let s = store("");
         submit(&s, "main", "t1");
         let job = s
-            .claim_wait("main", "c", std::time::Duration::from_millis(50))
+            .claim_wait(
+                "main",
+                "c",
+                std::time::Duration::from_millis(50),
+                &mut never(),
+            )
             .await;
         assert_eq!(job.map(|j| j.id), Some(1));
     }

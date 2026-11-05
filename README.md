@@ -76,8 +76,6 @@ webprint-client [--server URL] [--token TOKEN] [--printer NAME] [OPTIONS]
 
   run           poll for jobs and print them (default)
   printers      list the printers this machine can see
-  test-page     print a test page, to check the printing path
-  stats         show the site's queue statistics and exit
 ```
 
 You can run multiple clients with the same token.

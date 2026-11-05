@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "webprint-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "webprint-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "syntect",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "webprint-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",

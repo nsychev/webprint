@@ -425,7 +425,7 @@ async fn an_oversized_job_is_refused_rather_than_cut_short() {
     let h = Harness::new(CONFIG);
     let session = h.sign_in("t1", "pw1").await;
 
-    // Far more than the 20-page limit: printing the first 20 pages of it
+    // Far more than the 600-line limit: printing the first 600 lines of it
     // would waste paper and leave the team with half a listing.
     let content: String = (0..4_000).map(|i| format!("line {i}\n")).collect();
     let res = h
@@ -437,14 +437,8 @@ async fn an_oversized_job_is_refused_rather_than_cut_short() {
         .await;
     assert_eq!(res.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", res.text());
     let error = res.json()["error"].as_str().unwrap().to_string();
-    // The message names the real length, so the team can judge the cut.
-    assert!(error.contains("the limit is 10"), "{error}");
-    let pages: usize = error
-        .split_whitespace()
-        .nth(2)
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("no page count in {error:?}"));
-    assert!(pages > 10, "{error}");
+    // A flat refusal: the limit is on the print page, not in the error.
+    assert_eq!(error, "The job is too long.", "{error}");
 
     // Nothing was queued.
     let jobs = h.get_as("/api/my/jobs", &session).await.json();
@@ -900,7 +894,7 @@ async fn highlighting_is_offered_and_applied() {
         !page.contains("<select"),
         "the language picker should be gone"
     );
-    assert!(page.contains("pages per job"), "{page}");
+    assert!(page.contains("id=\"printForm\""), "{page}");
 
     // The language is worked out from the content itself.
     let res = h

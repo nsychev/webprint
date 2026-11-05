@@ -173,7 +173,6 @@ async fn print_page(
         &team.name,
         &team.site_name,
         &jobs,
-        state.renderer.style.max_pages,
         tz,
         notice.as_ref().map(|(ok, msg)| (*ok, msg.as_str())),
     ))
@@ -265,10 +264,6 @@ async fn submit_job(
     let id = state.store.reserve_id();
     let content: Arc<str> = Arc::from(content);
 
-    // Measuring lays the job out without embedding the fonts, which is what
-    // makes a document expensive. The document itself is built when the print
-    // client fetches it, so a long queue costs its text and not a quarter of
-    // a megabyte per job.
     let renderer = state.renderer.clone();
     let measured = {
         let (team_name, site, content) = (team.name.clone(), team.site.clone(), content.clone());
@@ -292,18 +287,10 @@ async fn submit_job(
         })?
     };
 
-    // Refuse an over-long job rather than printing the first pages of it:
-    // the team can see the real length and cut it down, and no paper is
-    // spent on a document that stops in the middle.
-    let max_pages = state.renderer.style.max_pages;
-    if measured.pages > max_pages {
+    if measured.lines > state.config.limits.max_lines {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "Too long: {} pages, and the limit is {max_pages}. \
-                 Print fewer lines, or split it across jobs.",
-                measured.pages
-            ),
+            "The job is too long.".to_string(),
         ));
     }
 
@@ -508,8 +495,6 @@ async fn api_complete(
     Path(id): Path<JobId>,
     Json(req): Json<CompleteRequest>,
 ) -> Response {
-    // Printer errors arrive as raw command output: multi-line, sometimes with
-    // CRLF. Flatten and shorten it, since it is shown to teams in a table.
     let error = req.error.map(|e| tidy_error(&e));
 
     match state

@@ -1,11 +1,6 @@
 //! Text normalization, wrapping and pagination.
-//!
-//! Layout assumes a monospace family: every character occupies one cell, so
-//! wrapping, the line-number gutter and span positions can all be computed in
-//! columns. All four JetBrains Mono faces share one advance width, so a bold
-//! or italic run never shifts the grid.
 
-use crate::style::{Span, TextStyle};
+use crate::style::Span;
 
 /// One physical (post-wrap) line of output.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,14 +16,6 @@ impl Line {
     pub fn text(&self) -> String {
         self.spans.iter().map(|s| s.text.as_str()).collect()
     }
-
-    fn plain(text: impl Into<String>) -> Self {
-        Self {
-            spans: vec![Span::plain(text)],
-            number: None,
-            continuation: false,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -38,8 +25,6 @@ pub struct Paginated {
     pub logical_lines: usize,
     /// Physical line count actually laid out.
     pub wrapped_lines: usize,
-    /// True when the job exceeded the page budget and was cut short.
-    pub truncated: bool,
 }
 
 /// Splits `content` into logical lines, expanding tabs to the next tab stop and
@@ -95,9 +80,7 @@ pub fn number_digits(logical_lines: usize) -> usize {
     logical_lines.max(1).to_string().len()
 }
 
-/// Wraps prose on word boundaries, breaking inside a word only when the word
-/// itself is longer than the line. Used for the team name in the heading,
-/// which can be long enough to need several lines.
+/// Wraps prose on word boundaries for the heading.
 pub fn wrap_words(text: &str, cols: usize, max_lines: usize) -> Vec<String> {
     let cols = cols.max(1);
     let max_lines = max_lines.max(1);
@@ -198,16 +181,9 @@ pub fn wrap(styled: &[Vec<Span>], cols: usize) -> Vec<Line> {
     out
 }
 
-/// Distributes lines over pages. Every page carries the same heading, so they
-/// all hold the same number of body lines.
-pub fn paginate(
-    lines: Vec<Line>,
-    logical_lines: usize,
-    lines_per_page: usize,
-    max_pages: usize,
-) -> Paginated {
+/// Distributes lines over pages.
+pub fn paginate(lines: Vec<Line>, logical_lines: usize, lines_per_page: usize) -> Paginated {
     let lines_per_page = lines_per_page.max(1);
-    let max_pages = max_pages.max(1);
     let wrapped_lines = lines.len();
 
     let mut pages: Vec<Vec<Line>> = Vec::new();
@@ -216,28 +192,8 @@ pub fn paginate(
         let take = rest.len().min(lines_per_page);
         pages.push(rest[..take].to_vec());
         rest = &rest[take..];
-        if rest.is_empty() || pages.len() >= max_pages {
+        if rest.is_empty() {
             break;
-        }
-    }
-
-    let truncated = !rest.is_empty();
-    if truncated {
-        // Replace the tail of the final page with a visible notice so nobody
-        // mistakes a cut-off printout for the whole job.
-        let printed = wrapped_lines - rest.len();
-        let mut notice = Line::plain(format!(
-            "[... truncated: job exceeds the {max_pages}-page limit, \
-             {printed} of {wrapped_lines} lines printed]"
-        ));
-        notice.spans[0].style = TextStyle::bold();
-        if let Some(last) = pages.last_mut() {
-            if last.len() >= 2 {
-                let n = last.len();
-                last[n - 1] = notice;
-            } else {
-                last.push(notice);
-            }
         }
     }
 
@@ -245,13 +201,13 @@ pub fn paginate(
         pages,
         logical_lines,
         wrapped_lines,
-        truncated,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::TextStyle;
 
     fn plain(lines: &[&str]) -> Vec<Vec<Span>> {
         lines.iter().map(|l| vec![Span::plain(*l)]).collect()
@@ -399,12 +355,11 @@ mod tests {
     fn pagination_fills_equal_pages_in_order() {
         let src: Vec<String> = (0..10).map(|i| i.to_string()).collect();
         let refs: Vec<&str> = src.iter().map(String::as_str).collect();
-        let p = paginate(wrap(&plain(&refs), 80), 10, 4, 10);
+        let p = paginate(wrap(&plain(&refs), 80), 10, 4);
         assert_eq!(p.pages.len(), 3);
         assert_eq!(p.pages[0].len(), 4);
         assert_eq!(p.pages[1].len(), 4);
         assert_eq!(p.pages[2].len(), 2);
-        assert!(!p.truncated);
         assert_eq!(p.wrapped_lines, 10);
         // Order is preserved across the page break.
         assert_eq!(p.pages[0][0].text(), "0");
@@ -413,21 +368,18 @@ mod tests {
     }
 
     #[test]
-    fn exceeding_the_page_budget_truncates_with_a_bold_notice() {
+    fn every_line_is_laid_out_however_long_the_job() {
         let src: Vec<String> = (0..100).map(|i| i.to_string()).collect();
         let refs: Vec<&str> = src.iter().map(String::as_str).collect();
-        let p = paginate(wrap(&plain(&refs), 80), 100, 5, 2);
-        assert_eq!(p.pages.len(), 2);
-        assert!(p.truncated);
-        let last = p.pages[1].last().unwrap();
-        assert!(last.text().contains("truncated"), "{}", last.text());
-        assert!(last.spans[0].style.bold);
+        let p = paginate(wrap(&plain(&refs), 80), 100, 5);
+        assert_eq!(p.pages.len(), 20);
+        assert_eq!(p.wrapped_lines, 100);
+        assert_eq!(p.pages.last().unwrap().last().unwrap().text(), "99");
     }
 
     #[test]
-    fn single_page_job_is_not_truncated() {
-        let p = paginate(wrap(&plain(&["one", "two"]), 80), 2, 60, 20);
+    fn a_short_job_takes_a_single_page() {
+        let p = paginate(wrap(&plain(&["one", "two"]), 80), 2, 60);
         assert_eq!(p.pages.len(), 1);
-        assert!(!p.truncated);
     }
 }

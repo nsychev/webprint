@@ -17,48 +17,44 @@ mod printer;
 mod ui;
 
 use api::{Api, ClaimedJob};
-use printer::Backend;
 use ui::{now_unix, Emphasis, Status};
+use universal_print::Sink;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "webprint-client",
     version,
-    about = "Onsite print client for webprint: fetches print jobs and prints them",
-    long_about = "Onsite print client for webprint.\n\n\
-                  It authenticates with the site token, waits for print jobs, and sends each \
-                  one to the printer. The token identifies the site, so no site name is needed.\n\n\
-                  If --token is not given, the client asks for it on start-up.\n\n\
-                  A build can carry a default server address, so an organiser \
-                  only has to run the program and type the token:\n    \
-                  WEBPRINT_DEFAULT_SERVER=https://example.org/print \
-                  cargo build --release -p webprint-client"
+    about = "Print client for webprint: fetches print jobs and prints them",
+    // `printers` needs no required arguments
+    subcommand_negates_reqs = true
 )]
 struct Args {
-    /// Server base URL, e.g. http://10.0.0.5:8080
-    ///
-    /// Optional when the binary was built with a server baked in; see
-    /// DEFAULT_SERVER below.
-    #[arg(short, long, env = "WEBPRINT_SERVER")]
+    /// Server base URL
+    #[arg(
+        short,
+        long,
+        env = "WEBPRINT_SERVER",
+        default_value = DEFAULT_SERVER,
+        required = DEFAULT_SERVER.is_none()
+    )]
     server: Option<String>,
 
-    /// Site token. Asked for interactively when omitted.
+    /// Site token
     #[arg(short, long, env = "WEBPRINT_TOKEN", hide_env_values = true)]
     token: Option<String>,
 
     /// Printer name; the system default is used when omitted.
+    /// Incompatible with IPP backend.
     #[arg(short, long, env = "WEBPRINT_PRINTER")]
     printer: Option<String>,
 
-    /// Printing backend: auto, lp, lpr, sumatra, acrobat, shell or dry-run.
+    /// Printer backend: auto, lp, lpr, sumatra[:path], winspooler, ipp:// /
+    /// ipps:// / http:// / https:// URI for a network printer or
+    /// command:<template> for a custom command.
     #[arg(long, env = "WEBPRINT_BACKEND", default_value = "auto")]
     backend: String,
 
-    /// Custom print command, e.g. "lp -d {printer} {file}".
-    #[arg(long, env = "WEBPRINT_PRINT_COMMAND")]
-    print_command: Option<String>,
-
-    /// Name reported to the server, shown in its stats.
+    /// Name reported to the server, shown in its stats, hostname by default.
     #[arg(long, env = "WEBPRINT_CLIENT_NAME")]
     name: Option<String>,
 
@@ -78,7 +74,7 @@ struct Args {
     #[arg(long)]
     no_ui: bool,
 
-    /// Handle at most one poll cycle, then exit. Useful for cron and tests.
+    /// Handle at most one poll cycle, then exit.
     #[arg(long)]
     once: bool,
 
@@ -92,16 +88,11 @@ enum Command {
     Run,
     /// List the printers this machine can see.
     Printers,
-    /// Print a test page to check the printing path.
-    TestPage,
-    /// Show the site's queue statistics and exit.
-    Stats,
 }
 
-/// A server address compiled in at build time, for handing an organiser a
-/// binary that only needs a token. Set `WEBPRINT_DEFAULT_SERVER` when
-/// building; release builds leave it unset.
-const BAKED_IN_SERVER: Option<&str> = option_env!("WEBPRINT_DEFAULT_SERVER");
+/// If `WEBPRINT_DEFAULT_SERVER` is set at build time, the client will use that server
+/// when no `--server` is given.
+const DEFAULT_SERVER: Option<&str> = option_env!("WEBPRINT_DEFAULT_SERVER");
 
 static STOPPING: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -114,16 +105,13 @@ fn main() {
     let interactive = std::io::stdin().is_terminal();
 
     let result = match args.command {
-        Some(Command::Printers) => list_printers(),
-        Some(Command::TestPage) => test_page(&args),
-        Some(Command::Stats) => show_stats(&args),
+        Some(Command::Printers) => list_printers(&args),
         Some(Command::Run) | None => run(args),
     };
 
     if let Err(error) = result {
         eprintln!("Error: {error:#}");
-        // Started by double-clicking, the console closes the moment the
-        // program exits, taking the message with it.
+
         if interactive {
             eprint!("\nPress Enter to close. ");
             let _ = std::io::stderr().flush();
@@ -134,44 +122,27 @@ fn main() {
     }
 }
 
-/// Resolves the printing backend and reports what it chose.
-fn resolve_backend(args: &Args) -> Result<Backend> {
-    let backend = printer::detect(Some(&args.backend), args.print_command.as_deref())?;
-    if args.printer.is_some() && !backend.supports_printer_choice() {
-        eprintln!(
-            "warning: the {} backend cannot choose a printer, so --printer is ignored",
-            backend.label()
-        );
-    }
-    Ok(backend)
+/// Resolves the printer backend.
+fn open_sink(args: &Args) -> Result<(Sink, Option<String>)> {
+    api::install_tls_provider(); // For IPPS
+
+    let named = args.printer.clone().filter(|p| !p.is_empty());
+    let sink = printer::open(
+        &args.backend,
+        named.as_deref(),
+        Duration::from_secs(args.print_timeout),
+    )?;
+    let printer = named.or_else(|| printer::default_printer(&sink));
+    Ok((sink, printer))
 }
 
 /// Asks for anything that was not passed on the command line.
 fn resolve_credentials(args: &Args) -> Result<(String, String)> {
     let interactive = std::io::stdin().is_terminal();
 
-    let server = match args
-        .server
-        .clone()
-        .or_else(|| BAKED_IN_SERVER.map(str::to_string))
-    {
+    let server = match args.server.clone().filter(|s| !s.is_empty()) {
         Some(s) => s,
-        None if interactive => {
-            print!("Server URL [http://localhost:8080]: ");
-            std::io::stdout().flush().ok();
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line)?;
-            let line = line.trim().to_string();
-            if line.is_empty() {
-                "http://localhost:8080".to_string()
-            } else {
-                line
-            }
-        }
-        None => bail!(
-            "no server given: pass --server, set WEBPRINT_SERVER, or build with \
-             WEBPRINT_DEFAULT_SERVER set"
-        ),
+        None => bail!("no server given: pass --server or set WEBPRINT_SERVER"),
     };
 
     let token = match args.token.clone() {
@@ -218,122 +189,28 @@ fn connect(args: &Args) -> Result<(Api, String)> {
     Ok((api, name))
 }
 
-fn list_printers() -> Result<()> {
-    let printers = printer::list_printers()?;
+fn list_printers(args: &Args) -> Result<()> {
+    let sink = printer::open(&args.backend, None, printer::DEFAULT_TIMEOUT)?;
+    println!("Printing backend: {}", printer::label(&sink));
+    let printers = printer::printers(&printer::runtime()?, &sink)?;
     if printers.is_empty() {
         println!("No printers found.");
-        return Ok(());
     }
-    println!("Printers:");
     for p in &printers {
-        println!(
-            "  {}{}{}",
-            p.name,
-            if p.is_default { "  (default)" } else { "" },
-            p.driver
-                .as_deref()
-                .map(|d| format!("  [{d}]"))
-                .unwrap_or_default()
-        );
-    }
-    match printer::detect(Some("auto"), None) {
-        Ok(backend) => println!("\nPrinting backend: {}", backend.label()),
-        Err(e) => println!("\nNo printing backend available: {e}"),
-    }
-    Ok(())
-}
-
-fn show_stats(args: &Args) -> Result<()> {
-    let (api, name) = connect(args)?;
-    let stats = api.stats()?;
-
-    let backend = printer::detect(Some(&args.backend), args.print_command.as_deref())
-        .map(|b| b.label())
-        .unwrap_or_else(|e| format!("unavailable ({e})"));
-    let mut status = Status::new(api.base().to_string(), name, backend, args.printer.clone());
-    status.tz_minutes = ui::parse_offset_minutes(stats.timezone.as_deref().unwrap_or("UTC"));
-    status.mark_online();
-    status.site = Some((stats.name.clone(), stats.site.clone()));
-    status.recent = stats.recent.iter().take(10).cloned().collect();
-    status.stats = Some(stats);
-
-    println!("{}", ui::plain(&ui::render(&status, now_unix())));
-    Ok(())
-}
-
-/// Renders a local test page and prints it, exercising the whole print path.
-fn test_page(args: &Args) -> Result<()> {
-    let backend = resolve_backend(args)?;
-    let printer_name = args.printer.clone().or_else(printer::default_printer);
-    println!(
-        "Printing a test page to {} via {}...",
-        printer_name
-            .clone()
-            .unwrap_or_else(|| "the default printer".into()),
-        backend.label()
-    );
-
-    let content = format!(
-        "webprint test page\n\n\
-         This page was produced by webprint-client {}.\n\
-         Host: {}\n\
-         Backend: {}\n\
-         Printer: {}\n\n\
-         If you can read this, the printing path works:\n\
-         the client can render a job, hand it to the printing subsystem, and\n\
-         the printer can put it on paper.\n\n\
-         Alignment check - the box below should have square corners and sit\n\
-         inside an even 1.25 cm margin on A4:\n\n\
-         +----------------------------------------------------------+\n\
-         |                                                          |\n\
-         |  Latin  ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrs   |\n\
-         |  Cyrillic  АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ              |\n\
-         |  Digits  0123456789  Symbols  !@#$%^&*(){{}}[]<>?/\\|~    |\n\
-         |                                                          |\n\
-         +----------------------------------------------------------+\n",
-        env!("CARGO_PKG_VERSION"),
-        client_name(args),
-        backend.label(),
-        printer_name
-            .clone()
-            .unwrap_or_else(|| "system default".into()),
-    );
-
-    let rendered = webprint_pdf::Renderer::new().render(&webprint_pdf::PrintJob {
-        team: "webprint test page",
-        site: "local",
-        label: "test",
-        submitted_at: &ui::format_time(now_unix(), 0),
-        content: &content,
-        language: Some("plain"),
-    });
-
-    let path = std::env::temp_dir().join("webprint-test-page.pdf");
-    std::fs::write(&path, &rendered.bytes)
-        .with_context(|| format!("writing {}", path.display()))?;
-
-    printer::print_file(
-        &backend,
-        &path,
-        printer_name.as_deref(),
-        Duration::from_secs(args.print_timeout),
-    )?;
-    println!("Sent. The PDF is at {}", path.display());
-    if backend.is_in_process() {
-        // The spooler accepts the job either way; a host-based driver simply
-        // discards it. Saying so here is the difference between a five-minute
-        // fix and a mystery during the contest.
-        println!(
-            "\nIf no paper comes out, this printer cannot interpret a PDF by itself.\n\
-             Install SumatraPDF next to this program, or re-run with\n\
-             --backend sumatra (or --print-command) to rasterise first."
-        );
+        let default = if p.is_default { "  (default)" } else { "" };
+        let driver = p.driver.as_deref().map(|d| format!("  [{d}]"));
+        println!("  {}{default}{}", p.name, driver.unwrap_or_default());
     }
     Ok(())
 }
 
 fn run(args: Args) -> Result<()> {
-    let backend = resolve_backend(&args)?;
+    let (sink, printer_name) = open_sink(&args)?;
+    let rt = printer::runtime()?;
+
+    if let Err(e) = printer::check(&rt, &sink) {
+        eprintln!("warning: the printer did not confirm that it takes PDFs: {e:#}");
+    }
     let (api, name) = connect(&args)?;
 
     // Confirm the token before settling into the poll loop, so a typo is
@@ -353,20 +230,16 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    let printer_name = args.printer.clone().or_else(|| {
-        if backend.supports_printer_choice() {
-            printer::default_printer()
-        } else {
-            None
-        }
-    });
-
     let status = Arc::new(Mutex::new({
         let mut s = Status::new(
             api.base().to_string(),
             name.clone(),
-            backend.label(),
-            printer_name.clone(),
+            printer::label(&sink),
+            Some(
+                printer_name
+                    .clone()
+                    .unwrap_or_else(|| printer::unnamed_printer(&sink).into()),
+            ),
         );
         if !ping.site.is_empty() {
             s.site = Some((ping.name.clone(), ping.site.clone()));
@@ -397,13 +270,12 @@ fn run(args: Args) -> Result<()> {
             api.base(),
             printer_name
                 .clone()
-                .unwrap_or_else(|| "system default".into()),
-            backend.label()
+                .unwrap_or_else(|| printer::unnamed_printer(&sink).into()),
+            printer::label(&sink)
         );
     }
 
     let poll_wait = Duration::from_secs(args.poll_seconds);
-    let print_timeout = Duration::from_secs(args.print_timeout);
 
     while !STOPPING.load(Ordering::SeqCst) {
         // Refresh the counters and recent jobs shown in the panel.
@@ -443,10 +315,9 @@ fn run(args: Args) -> Result<()> {
                 BUSY.store(true, Ordering::SeqCst);
                 let outcome = handle_job(
                     &api,
-                    &backend,
+                    &rt,
+                    &sink,
                     &job,
-                    printer_name.as_deref(),
-                    print_timeout,
                     args.keep.as_deref(),
                     live_ui,
                     &status,
@@ -497,13 +368,11 @@ fn run(args: Args) -> Result<()> {
 
 /// Fetches, prints and reports one job. The returned error is what the server
 /// is told, so it should read well to a team.
-#[allow(clippy::too_many_arguments)]
 fn handle_job(
     api: &Api,
-    backend: &Backend,
+    rt: &tokio::runtime::Runtime,
+    sink: &Sink,
     job: &ClaimedJob,
-    printer_name: Option<&str>,
-    print_timeout: Duration,
     keep: Option<&std::path::Path>,
     live_ui: bool,
     status: &Arc<Mutex<Status>>,
@@ -544,10 +413,6 @@ fn handle_job(
             println!("job {} document is {} KiB", job.id, pdf.len() / 1024);
         }
 
-        let path = std::env::temp_dir().join(format!("webprint-job-{}.pdf", job.id));
-        std::fs::write(&path, &pdf)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-
         if let Some(dir) = keep {
             if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| {
                 std::fs::write(dir.join(format!("webprint-job-{}.pdf", job.id)), &pdf)
@@ -556,11 +421,16 @@ fn handle_job(
             }
         }
 
-        let print_result = printer::print_file(backend, &path, printer_name, print_timeout)
-            .map_err(|e| e.to_string());
-        // The spool file is no longer needed either way.
-        let _ = std::fs::remove_file(&path);
-        print_result
+        // The sink spools the document itself where a backend needs a path,
+        // and removes that file afterwards.
+        printer::print(
+            rt,
+            sink,
+            &pdf,
+            &format!("webprint job {} ({})", job.id, job.team),
+            Some(&job.username),
+        )
+        .map_err(|e| format!("{e:#}"))
     })();
 
     // Always report, so the job does not sit claimed until its lease expires.

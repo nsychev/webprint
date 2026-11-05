@@ -50,7 +50,6 @@ fn single_page_job_has_header_and_footer() {
     let out = r.render(&job("hello world\nsecond line\n", "Team Alpha"));
     assert_eq!(out.pages, 1);
     assert_eq!(out.lines, 2);
-    assert!(!out.truncated);
     assert!(out.bytes.starts_with(b"%PDF-1.7"));
     assert!(out.bytes.ends_with(b"%%EOF\n"));
 
@@ -94,7 +93,6 @@ fn content_spans_multiple_pages_in_order() {
     let out = r.render(&job(&content, "Team Beta"));
     assert!(out.pages >= 3, "expected several pages, got {}", out.pages);
     assert_eq!(out.lines, 200);
-    assert!(!out.truncated);
 
     if !have("pdftotext") {
         return;
@@ -319,21 +317,21 @@ fn line_numbers_can_be_turned_off() {
 }
 
 #[test]
-fn oversized_jobs_are_capped_and_marked() {
-    let r = Renderer::new().with_style(Style {
-        max_pages: 2,
-        ..Style::default()
-    });
+fn a_long_job_is_rendered_whole() {
+    // Nothing here caps a job: an over-long one is refused at submission,
+    // so whatever reaches the renderer is printed to the last line.
+    let r = Renderer::new();
     let content: String = (0..500).map(|i| format!("{i}\n")).collect();
     let out = r.render(&job(&content, "Team Flood"));
-    assert_eq!(out.pages, 2);
-    assert!(out.truncated);
+    assert!(out.pages > 2, "expected many pages, got {}", out.pages);
+    assert_eq!(out.lines, 500);
 
     if !have("pdftotext") {
         return;
     }
-    let text = pdftotext(&write_tmp("capped.pdf", &out.bytes));
-    assert!(text.contains("truncated"), "{text}");
+    let text = pdftotext(&write_tmp("long.pdf", &out.bytes));
+    assert!(!text.contains("truncated"), "{text}");
+    assert!(text.contains("499"), "the last line is missing");
 }
 
 #[test]
@@ -427,26 +425,21 @@ fn measuring_agrees_with_rendering_but_builds_nothing() {
         );
         let measured = r.measure(&job);
         let rendered = r.render(&job);
-        assert!(!rendered.truncated, "{content:.40?}");
         assert_eq!(measured.pages, rendered.pages, "{content:.40?}");
         assert_eq!(measured.lines, rendered.lines, "{content:.40?}");
     }
 }
 
 #[test]
-fn measuring_reports_the_true_length_of_an_oversized_job() {
-    // Rendering caps the document; measuring says how long it really is, so
-    // a caller can tell a team by how much it is over.
-    let r = Renderer::new().with_style(Style {
-        max_pages: 2,
-        ..Style::default()
-    });
+fn measuring_agrees_with_rendering_on_a_long_job() {
+    // The server decides whether to accept a job from `measure`, so the two
+    // must report the same length however long the job is.
+    let r = Renderer::new();
     let content: String = (0..500).map(|i| format!("{i}\n")).collect();
     let measured = r.measure(&job(&content, "Team Flood"));
     let rendered = r.render(&job(&content, "Team Flood"));
-    assert_eq!(rendered.pages, 2, "rendering stops at the limit");
-    assert!(rendered.truncated);
-    assert!(measured.pages > 2, "measuring reports the real length");
+    assert_eq!(measured.pages, rendered.pages);
+    assert_eq!(measured.lines, rendered.lines);
     assert_eq!(measured.lines, 500);
 }
 
@@ -454,15 +447,11 @@ fn measuring_reports_the_true_length_of_an_oversized_job() {
 fn a_page_holds_the_lines_it_says_it_does() {
     let r = Renderer::new();
     let per_page = r.lines_per_page(1_000);
-    let roomy = Renderer::new().with_style(Style {
-        max_pages: 10_000,
-        ..Style::default()
-    });
     // Exactly one page's worth, then one line more.
     let exact: String = (0..per_page).map(|_| "x\n").collect();
     let one_more: String = (0..per_page + 1).map(|_| "x\n").collect();
-    assert_eq!(roomy.measure(&job(&exact, "T")).pages, 1);
-    assert_eq!(roomy.measure(&job(&one_more, "T")).pages, 2);
+    assert_eq!(r.measure(&job(&exact, "T")).pages, 1);
+    assert_eq!(r.measure(&job(&one_more, "T")).pages, 2);
 }
 
 #[test]

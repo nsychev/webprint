@@ -1,7 +1,4 @@
-//! The live status panel.
-//!
-//! [`render`] is pure: it turns a [`Status`] into styled lines, which the
-//! caller either paints with crossterm or flattens to plain text for log mode.
+//! The status panel.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -108,8 +105,7 @@ pub fn format_age(secs: i64) -> String {
 }
 
 /// Reads a canonical UTC offset as the server writes it: `UTC`, `UTC+06:00`,
-/// `UTC-03:30`. Anything else is treated as UTC rather than failing, since
-/// this only affects how times are displayed.
+/// `UTC-03:30`. Invalid values are treated as UTC.
 pub fn parse_offset_minutes(zone: &str) -> i32 {
     let rest = match zone.trim().strip_prefix("UTC") {
         Some(rest) if !rest.is_empty() => rest,
@@ -162,7 +158,7 @@ pub fn render(status: &Status, now: i64) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
 
     lines.push(vec![
-        ("  webprint print client".to_string(), Emphasis::Head),
+        ("  webprint client".to_string(), Emphasis::Head),
         (
             format!("   {}", format_time(now, status.tz_minutes)),
             Emphasis::Dim,
@@ -334,8 +330,9 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
-/// Flattens the panel to plain text.
-pub fn plain(lines: &[Line]) -> String {
+/// Flattens the panel to plain text, for asserting on it in tests.
+#[cfg(test)]
+fn plain(lines: &[Line]) -> String {
     lines
         .iter()
         .map(|line| {

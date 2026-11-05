@@ -105,7 +105,6 @@ pub fn print_page(
     team: &str,
     site_name: &str,
     jobs: &[JobView],
-    max_pages: usize,
     tz: TimeZone,
     notice: Option<(bool, &str)>,
 ) -> String {
@@ -131,8 +130,7 @@ pub fn print_page(
          </div>\n\
          <div class=\"msg\" id=\"status\">{notice_html}</div>\n\
          </form>\n\
-         <p class=\"hint\">Up to {max_pages} pages per job. \
-         Press <code>Ctrl</code>+<code>Enter</code> to print.</p>\n\
+         <p class=\"hint\">Press <code>Ctrl</code>+<code>Enter</code> to print.</p>\n\
          </div>\n\
          <h2>Your print jobs</h2>\n\
          <div class=\"card\" id=\"jobs\">{jobs_table}</div>\n\
@@ -405,7 +403,7 @@ mod tests {
 
         let mut j = job(1, JobState::Failed);
         j.error = Some(evil.to_string());
-        let page = print_page("", evil, evil, &[j], 10, TimeZone::UTC, Some((false, evil)));
+        let page = print_page("", evil, evil, &[j], TimeZone::UTC, Some((false, evil)));
         assert!(
             !page.contains("<script>alert(1)"),
             "print page is injectable"
@@ -413,26 +411,19 @@ mod tests {
     }
 
     #[test]
-    fn print_page_lists_jobs_and_limits() {
+    fn print_page_lists_jobs() {
         let jobs = vec![job(7, JobState::Printed), job(8, JobState::Queued)];
         let page = print_page(
             "",
             "Team One",
             "Main Hall",
             &jobs,
-            10,
             "UTC+03:00".parse().unwrap(),
             None,
         );
         assert!(page.contains("Team One"));
         assert!(page.contains("Main Hall"));
-        // Teams do not choose a language: it is detected from the content.
-        assert!(
-            !page.contains("<select"),
-            "the language picker should be gone"
-        );
         assert!(!page.contains("name=\"language\""), "{page}");
-        assert!(page.contains("Up to 10 pages"));
         assert!(page.contains(">printed<"));
         assert!(page.contains(">queued<"));
         // Both the no-JS form target and the JSON endpoint are present.
@@ -446,7 +437,7 @@ mod tests {
         let page = login("/print", None);
         assert!(page.contains("action=\"/print/login\""), "{page}");
 
-        let page = print_page("/print", "T", "S", &[], 5, TimeZone::UTC, None);
+        let page = print_page("/print", "T", "S", &[], TimeZone::UTC, None);
         assert!(
             page.contains("action=\"/print/print\""),
             "missing form action"
@@ -471,7 +462,7 @@ mod tests {
 
     #[test]
     fn at_the_root_no_prefix_is_added() {
-        let page = print_page("", "T", "S", &[], 5, TimeZone::UTC, None);
+        let page = print_page("", "T", "S", &[], TimeZone::UTC, None);
         assert!(page.contains("action=\"/print\""), "{page}");
         assert!(page.contains("'/api/print'"));
         assert!(!page.contains("__BASE__"));
@@ -479,7 +470,7 @@ mod tests {
 
     #[test]
     fn empty_job_list_reads_clearly() {
-        let page = print_page("", "T", "S", &[], 5, TimeZone::UTC, None);
+        let page = print_page("", "T", "S", &[], TimeZone::UTC, None);
         assert!(page.contains("No print jobs yet."));
         assert!(jobs_table(&[], TimeZone::UTC).contains("No print jobs yet."));
     }

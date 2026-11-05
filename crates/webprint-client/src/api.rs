@@ -109,10 +109,8 @@ pub struct Api {
     name: String,
 }
 
-/// Installs the TLS backend. reqwest is built without a built-in crypto
-/// provider so that the pure-Rust `ring` one can be used; it has to be
-/// installed once before the first HTTPS request.
-fn install_tls_provider() {
+/// Installs the TLS backend for `reqwest`.
+pub fn install_tls_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         // Only fails if something already installed a provider, which is fine.
@@ -121,14 +119,11 @@ fn install_tls_provider() {
 }
 
 impl Api {
-    /// `base` may omit the scheme, in which case `http://` is assumed.
-    /// `https://` works too, over a pure-Rust TLS stack.
     pub fn new(base: &str, token: &str, name: &str, poll_wait: Duration) -> Result<Self> {
         install_tls_provider();
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            // Long polling holds the claim request open, so the read timeout
-            // has to outlast it.
+            // Increase the read timeout for the long-polling to work.
             .timeout(poll_wait + Duration::from_secs(20))
             .user_agent(concat!("webprint-client/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -226,7 +221,7 @@ impl Api {
     }
 }
 
-/// Normalizes a base URL: adds a scheme, drops a trailing slash.
+/// Normalizes a base URL: adds http:// scheme if not set, drops a trailing slash.
 pub fn normalize_base(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     if base.starts_with("http://") || base.starts_with("https://") {
@@ -260,7 +255,7 @@ fn json<T: serde::de::DeserializeOwned>(res: reqwest::blocking::Response) -> Res
         .map_err(|e| ApiError::Server(format!("unexpected response from the server: {e}")))
 }
 
-/// Turns a transport failure into something an operator can act on.
+/// Converts a transport error into an `ApiError`.
 fn transport(err: reqwest::Error) -> ApiError {
     let message = if err.is_connect() {
         "cannot reach the server (connection refused or host unreachable)".to_string()

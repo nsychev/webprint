@@ -105,8 +105,6 @@ pub struct PdfConfig {
     /// the bundled set lacks (Kotlin, for instance).
     #[serde(default)]
     pub syntax_dir: Option<PathBuf>,
-    #[serde(default = "default_max_pages")]
-    pub max_pages: usize,
     /// Override the bundled monospace font.
     #[serde(default)]
     pub font_path: Option<PathBuf>,
@@ -117,6 +115,9 @@ pub struct PdfConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
+    /// Limit on lines in a single job after the formatting.
+    #[serde(default = "default_max_lines")]
+    pub max_lines: usize,
     /// Jobs a single team may have waiting at once.
     #[serde(default = "default_max_queued_per_team")]
     pub max_queued_per_team: usize,
@@ -154,8 +155,8 @@ fn default_line_spacing() -> f64 {
 fn default_tab_width() -> usize {
     4
 }
-fn default_max_pages() -> usize {
-    10
+fn default_max_lines() -> usize {
+    600
 }
 fn default_max_queued_per_team() -> usize {
     3
@@ -264,8 +265,8 @@ impl Config {
         if self.pdf.tab_width == 0 {
             errors.push("pdf.tab_width must be positive".into());
         }
-        if self.pdf.max_pages == 0 {
-            errors.push("pdf.max_pages must be positive".into());
+        if self.limits.max_lines == 0 {
+            errors.push("limits.max_lines must be positive".into());
         }
         if self.limits.max_queued_per_team == 0 {
             errors.push("limits.max_queued_per_team must be positive".into());
@@ -543,7 +544,6 @@ sites:
         assert_eq!(c.pdf.tab_width, style.tab_width);
         assert_eq!(c.pdf.line_numbers, style.line_numbers);
         assert_eq!(c.pdf.highlight, style.highlight);
-        assert_eq!(c.pdf.max_pages, style.max_pages);
     }
 
     #[test]
@@ -826,8 +826,8 @@ sites:
                 "session_hours",
             ),
             (
-                "pdf:\n  max_pages: 0\nsites:\n  s:\n    token: t\n    teams:\n      - {username: u, password: p, name: N}\n",
-                "max_pages",
+                "limits:\n  max_lines: 0\nsites:\n  s:\n    token: t\n    teams:\n      - {username: u, password: p, name: N}\n",
+                "max_lines",
             ),
         ];
         for (yaml, expected) in cases {

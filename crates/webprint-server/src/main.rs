@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
     let renderer = build_renderer(&config)?;
     tracing::info!(
         columns = renderer.text_columns(100),
-        max_pages = renderer.style.max_pages,
+        max_lines = config.limits.max_lines,
         "pdf renderer ready"
     );
 
@@ -213,7 +213,6 @@ fn build_renderer(config: &Config) -> Result<Renderer> {
             tab_width: pdf.tab_width,
             line_numbers: pdf.line_numbers,
             highlight: pdf.highlight,
-            max_pages: pdf.max_pages,
             ..Style::default()
         }))
 }

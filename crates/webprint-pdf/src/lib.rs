@@ -1,19 +1,4 @@
-//! PDF generation for webprint print jobs.
-//!
-//! Produces an A4 document with 1.25 cm padding on every side, a header
-//! carrying the team name and job metadata, a line-number gutter, and the
-//! submitted text set in JetBrains Mono, wrapped to the page and spanning as
-//! many pages as needed.
-//!
-//! All four JetBrains Mono faces are bundled and embedded into the PDF as
-//! CID-keyed fonts with `Identity-H` encoding, so nothing needs to be
-//! installed on the server or the print host, and any character the font
-//! covers (Latin, Cyrillic, Greek, box drawing, ...) prints correctly. Only
-//! the faces a job actually uses are embedded. A `/ToUnicode` map keeps the
-//! text selectable and searchable.
-//!
-//! Source code is highlighted for black-and-white printers: weight and slant
-//! carry the meaning instead of colour. See [`highlight`].
+//! PDF generation for webprint jobs.
 //!
 //! ```
 //! use webprint_pdf::{PrintJob, Renderer};
@@ -115,8 +100,6 @@ pub struct Style {
     /// Most lines the team name may occupy before it is cut short.
     pub max_title_lines: usize,
     pub footer_font_size: f64,
-    /// Hard cap on pages per job; the overflow is replaced by a notice.
-    pub max_pages: usize,
 }
 
 impl Default for Style {
@@ -127,9 +110,8 @@ impl Default for Style {
             tab_width: 4,
             line_numbers: true,
             highlight: true,
-            max_title_lines: 4,
+            max_title_lines: 3,
             footer_font_size: 7.5,
-            max_pages: 10,
         }
     }
 }
@@ -152,18 +134,12 @@ pub struct PrintJob<'a> {
     pub language: Option<&'a str>,
 }
 
-/// What a job will look like on paper, without building the document.
-///
-/// Highlighting cannot change how many characters a line holds, so it is not
-/// applied here: measuring skips both the grammars and the font embedding,
-/// which is what makes a document expensive to build.
+/// Estimated size of a print job on the paper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measured {
-    /// Pages the job really needs, ignoring [`Style::max_pages`] - so a
-    /// caller can say how far over a limit a job is, rather than only that
-    /// it is over.
+    /// Pages the job will take.
     pub pages: usize,
-    /// Physical lines after tab expansion and wrapping.
+    /// Line numbers after tab expansion and wrapping.
     pub lines: usize,
 }
 
@@ -174,8 +150,6 @@ pub struct Rendered {
     pub pages: usize,
     /// Physical lines laid out (after tab expansion and wrapping).
     pub lines: usize,
-    /// True when the job hit [`Style::max_pages`] and was cut short.
-    pub truncated: bool,
     /// Name of the grammar used for highlighting, if any.
     pub language: Option<String>,
 }
@@ -227,8 +201,6 @@ impl Default for Renderer {
 }
 
 impl Renderer {
-    /// A renderer using the bundled JetBrains Mono faces, A4 and defaults.
-    /// Text is laid out verbatim; see [`Renderer::with_highlighting`].
     pub fn new() -> Self {
         Self {
             fonts: FontSet::bundled(),
@@ -239,9 +211,7 @@ impl Renderer {
         }
     }
 
-    /// Loads the syntax grammars so submitted code can be highlighted. This
-    /// costs a few tens of milliseconds and some memory, so build one renderer
-    /// at start-up and share it.
+    /// Loads the syntax grammars for highlighting.
     #[cfg(feature = "highlight")]
     pub fn with_highlighting() -> Self {
         Self {
@@ -344,19 +314,16 @@ impl Renderer {
         }
     }
 
-    /// Lays out `job` without building the document: how many pages it will
-    /// take, and whether it will be cut short. Much cheaper than
-    /// [`Renderer::render`], which embeds the fonts.
+    /// Measures `job` size on paper without building the document.
     pub fn measure(&self, job: &PrintJob<'_>) -> Measured {
         let logical = layout::normalize(job.content, self.style.tab_width);
-        let paginated = self.paginate(job.team, &plain_lines(&logical), logical.len(), usize::MAX);
+        let paginated = self.paginate(job.team, &plain_lines(&logical), logical.len());
         Measured {
             pages: paginated.pages.len(),
             lines: paginated.wrapped_lines,
         }
     }
 
-    /// Lays out and renders `job`.
     pub fn render(&self, job: &PrintJob<'_>) -> Rendered {
         let logical = layout::normalize(job.content, self.style.tab_width);
         let (styled, language) = self.style_lines(&logical, job.language);
@@ -364,32 +331,29 @@ impl Renderer {
         let columns = self.frame(logical.len(), 1).columns;
         let title = layout::wrap_words(job.team, columns, self.style.max_title_lines);
         let frame = self.frame(logical.len(), title.len());
-        let paginated = self.paginate(job.team, &styled, logical.len(), self.style.max_pages);
+        let paginated = self.paginate(job.team, &styled, logical.len());
 
         let bytes = self.emit(job, &frame, &paginated, &title);
         Rendered {
             bytes,
             pages: paginated.pages.len(),
             lines: paginated.wrapped_lines,
-            truncated: paginated.truncated,
             language,
         }
     }
 
-    /// Wraps and paginates styled lines. The heading is wrapped first,
-    /// because a long team name costs body lines on every page.
+    /// Wraps and paginates styled lines starting with header.
     fn paginate(
         &self,
         team: &str,
         styled: &[Vec<Span>],
         logical_lines: usize,
-        max_pages: usize,
     ) -> layout::Paginated {
         let columns = self.frame(logical_lines, 1).columns;
         let title = layout::wrap_words(team, columns, self.style.max_title_lines);
         let frame = self.frame(logical_lines, title.len());
         let wrapped = layout::wrap(styled, frame.text_columns());
-        layout::paginate(wrapped, logical_lines, frame.lines_per_page, max_pages)
+        layout::paginate(wrapped, logical_lines, frame.lines_per_page)
     }
 
     /// Applies highlighting, returning the styled lines and the grammar name.

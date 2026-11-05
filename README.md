@@ -82,25 +82,22 @@ webprint-client [--server URL] [--token TOKEN] [--printer NAME] [OPTIONS]
 
 You can run multiple clients with the same token.
 
-On UNIX, it uses `lp` or `lpr` and prints PDFs via CUPS.
+The software tries to find a suitable printing method automatically. On Windows, download [SumatraPDF]
+and place it in the same directory with `webprint-client`.
 
-On Windows, it talks to Windows spooler. If the printer is unable to process
-PDFs, we need a rasterizer:
+You can also choose a method using `--backend`:
 
-1. **[SumatraPDF]** - put `SumatraPDF.exe` next to `webprint-client.exe` (the
-   portable build is a single file) and pass `--backend sumatra`; `PATH` and
-   the usual install directories are checked too.
-2. **Adobe Acrobat / Reader**, with `--backend acrobat`.
-3. Any other application:
+| `--backend` | Description |
+|---|---|
+| `auto` (default) | Unix: `lp` or `lpr`; Windows: SumatraPDF or native spooler |
+| `lp`, `lpr` | CUPS, or BSD-compatible `lpr` |
+| `winspooler` | Windows Print Spooler, PDF supports depends on the printer |
+| `sumatra`, `sumatra:<path>` | SumatraPDF |
+| `ipp://…`, `ipps://…`, `https://…` | Any network printer |
+| `command:<template>` | A command template with `{file}` and `{printer}` substitutions |
+| `dry-run` | Nothing; the job is dropped |
 
-   ```
-   webprint-client --print-command "\"C:\tools\SumatraPDF.exe\" -print-to \"{printer}\" -silent {file}"
-   ```
-
-   `{file}` and `{printer}` are substituted; the line runs through `cmd /C` on
-   Windows and `sh -c` on Unix.
-
-You can also run `webprint-client test-page` to check if everything works.
+For native backends, `--printer` may specify exact printer model to use.
 
 ## License
 

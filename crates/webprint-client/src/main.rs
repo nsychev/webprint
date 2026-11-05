@@ -148,9 +148,7 @@ fn resolve_credentials(args: &Args) -> Result<(String, String)> {
     let token = match args.token.clone() {
         Some(t) if !t.is_empty() => t,
         _ if interactive => {
-            // Read without echo: the token is a shared secret for the site.
-            let token =
-                rpassword::prompt_password("Site token: ").context("reading the site token")?;
+            let token = prompt_masked("Site token: ").context("reading the site token")?;
             if token.trim().is_empty() {
                 bail!("no site token given");
             }
@@ -160,6 +158,66 @@ fn resolve_credentials(args: &Args) -> Result<(String, String)> {
     };
 
     Ok((server, token))
+}
+
+/// Prompts for a secret on the terminal, echoing `*` for each character typed.
+///
+/// Backspace removes the last character and Ctrl-U the whole line; Ctrl-C
+/// aborts, since raw mode delivers it as a keystroke instead of a signal.
+fn prompt_masked(prompt: &str) -> Result<String> {
+    use crossterm::terminal;
+
+    let mut out = std::io::stdout();
+    write!(out, "{prompt}")?;
+    out.flush()?;
+
+    terminal::enable_raw_mode().context("switching the terminal to raw mode")?;
+    let secret = read_masked(&mut out);
+    let _ = terminal::disable_raw_mode();
+    // The echoed asterisks leave the cursor mid-line, raw mode or not.
+    let _ = writeln!(out);
+    let _ = out.flush();
+
+    secret
+}
+
+/// Reads one line with the terminal in raw mode, drawing the mask as it goes.
+fn read_masked(out: &mut impl Write) -> Result<String> {
+    use crossterm::event::{read, Event, KeyCode, KeyEventKind, KeyModifiers};
+
+    let mut secret = String::new();
+    loop {
+        let Event::Key(key) = read().context("reading from the terminal")? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) => break,
+            (KeyCode::Char('c' | 'd'), KeyModifiers::CONTROL) => bail!("cancelled"),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                for _ in secret.chars() {
+                    write!(out, "\u{8} \u{8}")?;
+                }
+                secret.clear();
+                out.flush()?;
+            }
+            (KeyCode::Backspace, _) => {
+                if secret.pop().is_some() {
+                    write!(out, "\u{8} \u{8}")?;
+                    out.flush()?;
+                }
+            }
+            (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                secret.push(c);
+                write!(out, "*")?;
+                out.flush()?;
+            }
+            _ => {}
+        }
+    }
+    Ok(secret)
 }
 
 fn client_name(args: &Args) -> String {
